@@ -14,6 +14,7 @@ import httpx
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
+from utils.checkin_executor import DEFAULT_USER_AGENT, PLAYWRIGHT_ARGS, execute_check_in_action
 from utils.config import AccountConfig, AppConfig, load_accounts_config
 from utils.notify import notify
 
@@ -23,29 +24,28 @@ BALANCE_HASH_FILE = 'balance_hash.txt'
 
 
 def load_balance_hash():
-	"""加载余额hash"""
+	"""加载余额哈希"""
 	try:
 		if os.path.exists(BALANCE_HASH_FILE):
-			with open(BALANCE_HASH_FILE, 'r', encoding='utf-8') as f:
-				return f.read().strip()
+			with open(BALANCE_HASH_FILE, 'r', encoding='utf-8') as file:
+				return file.read().strip()
 	except Exception:
 		pass
 	return None
 
 
 def save_balance_hash(balance_hash):
-	"""保存余额hash"""
+	"""保存余额哈希"""
 	try:
-		with open(BALANCE_HASH_FILE, 'w', encoding='utf-8') as f:
-			f.write(balance_hash)
+		with open(BALANCE_HASH_FILE, 'w', encoding='utf-8') as file:
+			file.write(balance_hash)
 	except Exception as e:
 		print(f'Warning: Failed to save balance hash: {e}')
 
 
 def generate_balance_hash(balances):
-	"""生成余额数据的hash"""
-	# 将包含 quota 和 used 的结构转换为简单的 quota 值用于 hash 计算
-	simple_balances = {k: v['quota'] for k, v in balances.items()} if balances else {}
+	"""生成余额哈希"""
+	simple_balances = {key: value['quota'] for key, value in balances.items()} if balances else {}
 	balance_json = json.dumps(simple_balances, sort_keys=True, separators=(',', ':'))
 	return hashlib.sha256(balance_json.encode('utf-8')).hexdigest()[:16]
 
@@ -62,36 +62,29 @@ def parse_cookies(cookies_data):
 				key, value = cookie.strip().split('=', 1)
 				cookies_dict[key] = value
 		return cookies_dict
+
 	return {}
 
 
 async def get_waf_cookies_with_playwright(account_name: str, login_url: str, required_cookies: list[str]):
-	"""使用 Playwright 获取 WAF cookies（隐私模式）"""
+	"""使用 Playwright 获取 WAF cookies"""
 	print(f'[PROCESSING] {account_name}: Starting browser to get WAF cookies...')
 
-	async with async_playwright() as p:
+	async with async_playwright() as playwright:
 		import tempfile
 
 		with tempfile.TemporaryDirectory() as temp_dir:
-			context = await p.chromium.launch_persistent_context(
+			context = await playwright.chromium.launch_persistent_context(
 				user_data_dir=temp_dir,
 				headless=False,
-				user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+				user_agent=DEFAULT_USER_AGENT,
 				viewport={'width': 1920, 'height': 1080},
-				args=[
-					'--disable-blink-features=AutomationControlled',
-					'--disable-dev-shm-usage',
-					'--disable-web-security',
-					'--disable-features=VizDisplayCompositor',
-					'--no-sandbox',
-				],
+				args=PLAYWRIGHT_ARGS,
 			)
-
 			page = await context.new_page()
 
 			try:
 				print(f'[PROCESSING] {account_name}: Access login page to get initial cookies...')
-
 				await page.goto(login_url, wait_until='networkidle')
 
 				try:
@@ -100,7 +93,6 @@ async def get_waf_cookies_with_playwright(account_name: str, login_url: str, req
 					await page.wait_for_timeout(3000)
 
 				cookies = await page.context.cookies()
-
 				waf_cookies = {}
 				for cookie in cookies:
 					cookie_name = cookie.get('name')
@@ -110,32 +102,59 @@ async def get_waf_cookies_with_playwright(account_name: str, login_url: str, req
 
 				print(f'[INFO] {account_name}: Got {len(waf_cookies)} WAF cookies')
 
-				missing_cookies = [c for c in required_cookies if c not in waf_cookies]
-
+				missing_cookies = [cookie for cookie in required_cookies if cookie not in waf_cookies]
 				if missing_cookies:
 					print(f'[FAILED] {account_name}: Missing WAF cookies: {missing_cookies}')
-					await context.close()
 					return None
 
 				print(f'[SUCCESS] {account_name}: Successfully got all WAF cookies')
-
-				await context.close()
-
 				return waf_cookies
-
 			except Exception as e:
 				print(f'[FAILED] {account_name}: Error occurred while getting WAF cookies: {e}')
-				await context.close()
 				return None
+			finally:
+				await context.close()
 
 
-def get_user_info(client, headers, user_info_url: str):
+def get_user_info(client, headers, user_info_url: str, provider_config):
 	"""获取用户信息"""
 	try:
 		response = client.get(user_info_url, headers=headers, timeout=30)
 
 		if response.status_code == 200:
-			data = response.json()
+			try:
+				data = response.json()
+			except ValueError:
+				content_type = response.headers.get('content-type', '')
+				body_preview = response.text.strip().replace('\n', ' ')[:120]
+				return {
+					'success': False,
+					'error': (
+						f'Failed to get user info: invalid JSON response, '
+						f'content-type={content_type}, body={body_preview}'
+					),
+				}
+
+			if provider_config.user_info_mode == 'sign_status':
+				success_field = provider_config.user_info_success_field or 'signedInToday'
+				signed_in_today = bool(data.get(success_field))
+				return {
+					'success': signed_in_today,
+					'display': f'[CHECK-IN] Signed in today: {"yes" if signed_in_today else "no"}',
+				}
+
+			if provider_config.user_info_mode == 'record_status':
+				record_field = provider_config.user_info_success_field or 'today_record'
+				record = data.get(record_field)
+				signed_in_today = bool(record)
+				display = f'[CHECK-IN] Today record exists: {"yes" if signed_in_today else "no"}'
+				if isinstance(record, dict) and record.get('difficulty_key'):
+					display += f', difficulty={record.get("difficulty_key")}'
+				return {
+					'success': signed_in_today,
+					'display': display,
+				}
+
 			if data.get('success'):
 				user_data = data.get('data', {})
 				quota = round(user_data.get('quota', 0) / 500000, 2)
@@ -146,13 +165,49 @@ def get_user_info(client, headers, user_info_url: str):
 					'used_quota': used_quota,
 					'display': f':money: Current balance: ${quota}, Used: ${used_quota}',
 				}
+
 		return {'success': False, 'error': f'Failed to get user info: HTTP {response.status_code}'}
 	except Exception as e:
 		return {'success': False, 'error': f'Failed to get user info: {str(e)[:50]}...'}
 
 
+def build_request_headers(provider_config, api_user: str) -> dict:
+	"""构建通用请求头"""
+	return {
+		'User-Agent': DEFAULT_USER_AGENT,
+		'Accept': 'application/json, text/plain, */*',
+		'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+		'Accept-Encoding': 'identity',
+		'Referer': provider_config.domain,
+		'Origin': provider_config.domain,
+		'Connection': 'keep-alive',
+		'Sec-Fetch-Dest': 'empty',
+		'Sec-Fetch-Mode': 'cors',
+		'Sec-Fetch-Site': 'same-origin',
+		provider_config.api_user_key: api_user,
+	}
+
+
+def fetch_user_info(client, provider_config, headers: dict):
+	"""查询用户信息并打印结果"""
+	if provider_config.user_info_mode == 'none' or not provider_config.user_info_path:
+		return None
+
+	user_info_url = f'{provider_config.domain}{provider_config.user_info_path}'
+	user_info = get_user_info(client, headers, user_info_url, provider_config)
+
+	if user_info and user_info.get('display'):
+		print(user_info['display'])
+	elif user_info and user_info.get('success'):
+		print(user_info['display'])
+	elif user_info:
+		print(user_info.get('error', 'Unknown error'))
+
+	return user_info
+
+
 async def prepare_cookies(account_name: str, provider_config, user_cookies: dict) -> dict | None:
-	"""准备请求所需的 cookies（可能包含 WAF cookies）"""
+	"""准备请求所需 cookies"""
 	waf_cookies = {}
 
 	if provider_config.needs_waf_cookies():
@@ -167,43 +222,8 @@ async def prepare_cookies(account_name: str, provider_config, user_cookies: dict
 	return {**waf_cookies, **user_cookies}
 
 
-def execute_check_in(client, account_name: str, provider_config, headers: dict):
-	"""执行签到请求"""
-	print(f'[NETWORK] {account_name}: Executing check-in')
-
-	checkin_headers = headers.copy()
-	checkin_headers.update({'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'})
-
-	sign_in_url = f'{provider_config.domain}{provider_config.sign_in_path}'
-	response = client.post(sign_in_url, headers=checkin_headers, timeout=30)
-
-	print(f'[RESPONSE] {account_name}: Response status code {response.status_code}')
-
-	if response.status_code == 200:
-		try:
-			result = response.json()
-			if result.get('ret') == 1 or result.get('code') == 0 or result.get('success'):
-				print(f'[SUCCESS] {account_name}: Check-in successful!')
-				return True
-			else:
-				error_msg = result.get('msg', result.get('message', 'Unknown error'))
-				print(f'[FAILED] {account_name}: Check-in failed - {error_msg}')
-				return False
-		except json.JSONDecodeError:
-			# 如果不是 JSON 响应，检查是否包含成功标识
-			if 'success' in response.text.lower():
-				print(f'[SUCCESS] {account_name}: Check-in successful!')
-				return True
-			else:
-				print(f'[FAILED] {account_name}: Check-in failed - Invalid response format')
-				return False
-	else:
-		print(f'[FAILED] {account_name}: Check-in failed - HTTP {response.status_code}')
-		return False
-
-
 async def check_in_account(account: AccountConfig, account_index: int, app_config: AppConfig):
-	"""为单个账号执行签到操作"""
+	"""为单个账号执行签到"""
 	account_name = account.get_display_name(account_index)
 	print(f'\n[PROCESSING] Starting to process {account_name}')
 
@@ -212,50 +232,52 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 		print(f'[FAILED] {account_name}: Provider "{account.provider}" not found in configuration')
 		return False, None
 
-	print(f'[INFO] {account_name}: Using provider "{account.provider}" ({provider_config.domain})')
+	print(
+		f'[INFO] {account_name}: Using provider "{account.provider}" '
+		f'({provider_config.domain}, mode={provider_config.check_in_mode})'
+	)
 
 	user_cookies = parse_cookies(account.cookies)
-	if not user_cookies:
+	has_browser_local_storage = bool(account.browser_local_storage)
+	if not user_cookies and not has_browser_local_storage:
 		print(f'[FAILED] {account_name}: Invalid configuration format')
 		return False, None
 
 	all_cookies = await prepare_cookies(account_name, provider_config, user_cookies)
-	if not all_cookies:
+	if all_cookies is None:
 		return False, None
 
 	client = httpx.Client(http2=True, timeout=30.0)
 
 	try:
 		client.cookies.update(all_cookies)
+		headers = build_request_headers(provider_config, account.api_user)
 
-		headers = {
-			'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
-			'Accept': 'application/json, text/plain, */*',
-			'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-			'Accept-Encoding': 'gzip, deflate, br, zstd',
-			'Referer': provider_config.domain,
-			'Origin': provider_config.domain,
-			'Connection': 'keep-alive',
-			'Sec-Fetch-Dest': 'empty',
-			'Sec-Fetch-Mode': 'cors',
-			'Sec-Fetch-Site': 'same-origin',
-			provider_config.api_user_key: account.api_user,
-		}
+		if provider_config.user_info_mode in ('sign_status', 'record_status'):
+			before_user_info = fetch_user_info(client, provider_config, headers)
+			if before_user_info and before_user_info.get('success'):
+				print(f'[INFO] {account_name}: Already signed in today, skip browser check-in flow')
+				return True, before_user_info
 
-		user_info_url = f'{provider_config.domain}{provider_config.user_info_path}'
-		user_info = get_user_info(client, headers, user_info_url)
-		if user_info and user_info.get('success'):
-			print(user_info['display'])
-		elif user_info:
-			print(user_info.get('error', 'Unknown error'))
-
-		if provider_config.needs_manual_check_in():
-			success = execute_check_in(client, account_name, provider_config, headers)
+		if not provider_config.needs_manual_check_in():
+			user_info = fetch_user_info(client, provider_config, headers)
+			success = bool(user_info and user_info.get('success'))
+			if success:
+				print(f'[INFO] {account_name}: Check-in completed automatically (triggered by user info request)')
 			return success, user_info
-		else:
-			print(f'[INFO] {account_name}: Check-in completed automatically (triggered by user info request)')
-			return True, user_info
 
+		success = await execute_check_in_action(
+			client,
+			account_name,
+			provider_config,
+			headers,
+			all_cookies,
+			account.browser_local_storage,
+		)
+		user_info = fetch_user_info(client, provider_config, headers)
+		if provider_config.user_info_mode != 'none' and user_info is not None:
+			success = success and bool(user_info.get('success'))
+		return success, user_info
 	except Exception as e:
 		print(f'[FAILED] {account_name}: Error occurred during check-in process - {str(e)[:50]}...')
 		return False, None
@@ -279,13 +301,12 @@ async def main():
 	print(f'[INFO] Found {len(accounts)} account configurations')
 
 	last_balance_hash = load_balance_hash()
-
 	success_count = 0
 	total_count = len(accounts)
 	notification_content = []
 	current_balances = {}
-	need_notify = False  # 是否需要发送通知
-	balance_changed = False  # 余额是否有变化
+	need_notify = False
+	balance_changed = False
 
 	for i, account in enumerate(accounts):
 		account_key = f'account_{i + 1}'
@@ -295,7 +316,6 @@ async def main():
 				success_count += 1
 
 			should_notify_this_account = False
-
 			if not success:
 				should_notify_this_account = True
 				need_notify = True
@@ -303,9 +323,8 @@ async def main():
 				print(f'[NOTIFY] {account_name} failed, will send notification')
 
 			if user_info and user_info.get('success'):
-				current_quota = user_info['quota']
-				current_used = user_info['used_quota']
-				current_balances[account_key] = {'quota': current_quota, 'used': current_used}
+				if 'quota' in user_info and 'used_quota' in user_info:
+					current_balances[account_key] = {'quota': user_info['quota'], 'used': user_info['used_quota']}
 
 			if should_notify_this_account:
 				account_name = account.get_display_name(i)
@@ -316,48 +335,42 @@ async def main():
 				elif user_info:
 					account_result += f'\n{user_info.get("error", "Unknown error")}'
 				notification_content.append(account_result)
-
 		except Exception as e:
 			account_name = account.get_display_name(i)
 			print(f'[FAILED] {account_name} processing exception: {e}')
-			need_notify = True  # 异常也需要通知
+			need_notify = True
 			notification_content.append(f'[FAIL] {account_name} exception: {str(e)[:50]}...')
 
-	# 检查余额变化
 	current_balance_hash = generate_balance_hash(current_balances) if current_balances else None
 	if current_balance_hash:
 		if last_balance_hash is None:
-			# 首次运行
 			balance_changed = True
 			need_notify = True
 			print('[NOTIFY] First run detected, will send notification with current balances')
 		elif current_balance_hash != last_balance_hash:
-			# 余额有变化
 			balance_changed = True
 			need_notify = True
 			print('[NOTIFY] Balance changes detected, will send notification')
 		else:
 			print('[INFO] No balance changes detected')
 
-	# 为有余额变化的情况添加所有成功账号到通知内容
 	if balance_changed:
 		for i, account in enumerate(accounts):
 			account_key = f'account_{i + 1}'
 			if account_key in current_balances:
 				account_name = account.get_display_name(i)
-				# 只添加成功获取余额的账号，且避免重复添加
 				account_result = f'[BALANCE] {account_name}'
-				account_result += f'\n:money: Current balance: ${current_balances[account_key]["quota"]}, Used: ${current_balances[account_key]["used"]}'
-				# 检查是否已经在通知内容中（避免重复）
+				account_result += (
+					f'\n:money: Current balance: ${current_balances[account_key]["quota"]}, '
+					f'Used: ${current_balances[account_key]["used"]}'
+				)
 				if not any(account_name in item for item in notification_content):
 					notification_content.append(account_result)
 
-	# 保存当前余额hash
 	if current_balance_hash:
 		save_balance_hash(current_balance_hash)
 
 	if need_notify and notification_content:
-		# 构建通知内容
 		summary = [
 			'[STATS] Check-in result statistics:',
 			f'[SUCCESS] Success: {success_count}/{total_count}',
@@ -372,7 +385,6 @@ async def main():
 			summary.append('[ERROR] All accounts check-in failed')
 
 		time_info = f'[TIME] Execution time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'
-
 		notify_content = '\n\n'.join([time_info, '\n'.join(notification_content), '\n'.join(summary)])
 
 		print(notify_content)
@@ -381,12 +393,11 @@ async def main():
 	else:
 		print('[INFO] All accounts successful and no balance changes detected, notification skipped')
 
-	# 设置退出码
 	sys.exit(0 if success_count > 0 else 1)
 
 
 def run_main():
-	"""运行主函数的包装函数"""
+	"""运行主函数"""
 	try:
 		asyncio.run(main())
 	except KeyboardInterrupt:

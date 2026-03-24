@@ -255,6 +255,40 @@
 - `PROVIDERS` 是可选的，不配置则使用内置的 `anyrouter` 和 `agentrouter`
 - 自定义的 provider 配置会覆盖同名的默认配置
 
+### Page check-in modes
+
+For sites that do not complete check-in with a single API call, providers now support explicit check-in strategies:
+
+- `check_in_mode: "api_post"`: legacy API POST mode, compatible with the old `sign_in_path` flow
+- `check_in_mode: "auto_user_info"`: querying `user_info_path` completes check-in implicitly
+- `check_in_mode: "page_button"`: open `check_in_page_path` in Playwright and click a button
+- `check_in_mode: "page_challenge"`: open `check_in_page_path`, choose difficulty, start calculation, then submit
+- `check_in_config`: JSON object for selectors and wait conditions
+
+Example:
+
+```json
+{
+  "challenge_site": {
+    "domain": "https://example.com",
+    "login_path": "/login",
+    "user_info_path": "/api/user/self",
+    "api_user_key": "new-api-user",
+    "bypass_method": "waf_cookies",
+    "waf_cookie_names": ["acw_tc"],
+    "check_in_mode": "page_challenge",
+    "check_in_page_path": "/mission/checkin",
+    "check_in_config": {
+      "difficulty_option_selector": "[data-level='easy']",
+      "start_button_selector": "button.start",
+      "submit_button_selector": "button.submit",
+      "ready_text": "计算完成",
+      "success_text": "签到成功"
+    }
+  }
+}
+```
+
 ## 开启通知
 
 脚本支持多种通知方式，可以通过配置以下环境变量开启，如果 `webhook` 有要求安全设置，例如钉钉，可以在新建机器人时选择自定义关键词，填写 `AnyRouter`。
