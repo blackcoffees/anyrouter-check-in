@@ -129,6 +129,7 @@ def get_user_info(client, headers, user_info_url: str, provider_config):
 				body_preview = response.text.strip().replace('\n', ' ')[:120]
 				return {
 					'success': False,
+					'expired': 'text/html' in content_type,
 					'error': (
 						f'Failed to get user info: invalid JSON response, '
 						f'content-type={content_type}, body={body_preview}'
@@ -166,7 +167,8 @@ def get_user_info(client, headers, user_info_url: str, provider_config):
 					'display': f':money: Current balance: ${quota}, Used: ${used_quota}',
 				}
 
-		return {'success': False, 'error': f'Failed to get user info: HTTP {response.status_code}'}
+		expired = response.status_code in (401, 403)
+		return {'success': False, 'expired': expired, 'error': f'Failed to get user info: HTTP {response.status_code}'}
 	except Exception as e:
 		return {'success': False, 'error': f'Failed to get user info: {str(e)[:50]}...'}
 
@@ -330,6 +332,8 @@ async def main():
 				account_name = account.get_display_name(i)
 				status = '[SUCCESS]' if success else '[FAIL]'
 				account_result = f'{status} {account_name}'
+				if user_info and user_info.get('expired'):
+					account_result += '\n[TOKEN EXPIRED] 请更新 cookies/token'
 				if user_info and user_info.get('success'):
 					account_result += f'\n{user_info["display"]}'
 				elif user_info:

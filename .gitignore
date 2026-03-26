@@ -11,4 +11,4 @@ AGENTS.md
 /.idea/*
 */.idea
 CLAUDE.md
-.spec-workflow/*
+.spec-workflow
