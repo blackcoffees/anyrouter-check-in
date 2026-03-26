@@ -330,8 +330,10 @@ async def main():
 
 			if should_notify_this_account:
 				account_name = account.get_display_name(i)
+				provider_config = app_config.get_provider(account.provider)
+				provider_domain = provider_config.domain if provider_config else 'unknown'
 				status = '[SUCCESS]' if success else '[FAIL]'
-				account_result = f'{status} {account_name}'
+				account_result = f'{status} {account_name} ({provider_domain})'
 				if user_info and user_info.get('expired'):
 					account_result += '\n[TOKEN EXPIRED] 请更新 cookies/token'
 				if user_info and user_info.get('success'):
@@ -363,7 +365,9 @@ async def main():
 			account_key = f'account_{i + 1}'
 			if account_key in current_balances:
 				account_name = account.get_display_name(i)
-				account_result = f'[BALANCE] {account_name}'
+				provider_config = app_config.get_provider(account.provider)
+				provider_domain = provider_config.domain if provider_config else 'unknown'
+				account_result = f'[BALANCE] {account_name} ({provider_domain})'
 				account_result += (
 					f'\n:money: Current balance: ${current_balances[account_key]["quota"]}, '
 					f'Used: ${current_balances[account_key]["used"]}'
