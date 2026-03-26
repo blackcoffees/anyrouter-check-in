@@ -97,6 +97,14 @@ def get_required_config_value(check_in_config: dict, key: str, account_name: str
 	return None
 
 
+def get_config_string_list(check_in_config: dict, key: str) -> list[str]:
+	value = check_in_config.get(key)
+	if not isinstance(value, list):
+		return []
+
+	return [str(item).strip() for item in value if str(item).strip()]
+
+
 async def wait_for_page_text(page: Page, text: str, timeout_ms: int):
 	"""等待页面出现指定文本"""
 	await page.wait_for_function(
@@ -315,6 +323,12 @@ async def click_with_optional_response(page: Page, selector: str, check_in_confi
 	await click_selector(page, selector, timeout_ms)
 
 
+async def run_pre_click_selectors(page: Page, account_name: str, check_in_config: dict, timeout_ms: int):
+	for selector in get_config_string_list(check_in_config, 'pre_click_selectors'):
+		print(f'[PAGE-ACTION] {account_name}: Run pre-click selector {selector}')
+		await click_selector(page, selector, timeout_ms)
+
+
 async def execute_page_button_check_in_on_page(page: Page, account_name: str, check_in_config: dict) -> bool:
 	"""执行页面按钮签到"""
 	timeout_ms = get_timeout_ms(check_in_config)
@@ -323,6 +337,7 @@ async def execute_page_button_check_in_on_page(page: Page, account_name: str, ch
 		return False
 
 	await dismiss_known_overlays(page, account_name, check_in_config)
+	await run_pre_click_selectors(page, account_name, check_in_config, timeout_ms)
 	state = await wait_for_button_or_success(page, button_selector, check_in_config, timeout_ms)
 	if state == 'success':
 		print(f'[INFO] {account_name}: Page already shows check-in success state')

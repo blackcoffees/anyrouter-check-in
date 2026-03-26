@@ -107,6 +107,32 @@ def test_execute_api_check_in_success():
 	client.post.assert_called_once()
 
 
+def test_execute_page_button_flow_runs_pre_click_selectors_before_submit():
+	page = FakePage()
+	config = {
+		'pre_click_selectors': [
+			'button[role="tab"]:has-text("surprise")',
+			'button.fortune-action',
+		],
+		'button_selector': 'button.confirm-check-in',
+		'success_text': 'check-in success',
+		'timeout_ms': 5000,
+	}
+
+	success = asyncio.run(execute_page_button_check_in_on_page(page, 'Account 1', config))
+
+	assert success is True
+	assert page.calls.count(('locator_click', 'button[role="tab"]:has-text("surprise")')) == 1
+	assert page.calls.count(('locator_click', 'button.fortune-action')) == 1
+	assert page.calls.count(('locator_click', 'button.confirm-check-in')) == 1
+	assert page.calls.index(('locator_click', 'button[role="tab"]:has-text("surprise")')) < page.calls.index(
+		('locator_click', 'button.confirm-check-in')
+	)
+	assert page.calls.index(('locator_click', 'button.fortune-action')) < page.calls.index(
+		('locator_click', 'button.confirm-check-in')
+	)
+
+
 def test_execute_page_button_flow():
 	page = FakePage()
 	config = {

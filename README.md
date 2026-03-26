@@ -264,6 +264,7 @@ For sites that do not complete check-in with a single API call, providers now su
 - `check_in_mode: "page_button"`: open `check_in_page_path` in Playwright and click a button
 - `check_in_mode: "page_challenge"`: open `check_in_page_path`, choose difficulty, start calculation, then submit
 - `check_in_config`: JSON object for selectors and wait conditions
+- `check_in_config.pre_click_selectors`: optional selector list, clicked in order before the final `button_selector`, useful for mode switching or multi-step entry flows
 
 Example:
 
