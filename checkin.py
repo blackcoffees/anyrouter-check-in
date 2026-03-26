@@ -334,6 +334,9 @@ async def main():
 				provider_domain = provider_config.domain if provider_config else 'unknown'
 				status = '[SUCCESS]' if success else '[FAIL]'
 				account_result = f'{status} {account_name} ({provider_domain})'
+				if provider_config:
+					login_url = f'{provider_domain}{provider_config.login_path}'
+					account_result += f'\n签到站: {login_url}'
 				if user_info and user_info.get('expired'):
 					account_result += '\n[TOKEN EXPIRED] 请更新 cookies/token'
 				if user_info and user_info.get('success'):
