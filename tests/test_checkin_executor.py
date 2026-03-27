@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
 from utils.checkin_executor import (
+	apply_browser_headers,
 	build_check_in_url,
 	build_browser_cookies,
 	execute_api_check_in,
@@ -199,7 +200,7 @@ def test_execute_check_in_action_dispatches_browser_mode():
 		success = asyncio.run(execute_check_in_action(client, 'Account 1', provider, {}, {'session': 'token'}))
 
 	assert success is True
-	mock_browser.assert_awaited_once_with('Account 1', provider, {'session': 'token'}, None)
+	mock_browser.assert_awaited_once_with('Account 1', provider, {'session': 'token'}, None, None)
 
 
 def test_execute_check_in_action_dispatches_browser_mode_with_local_storage():
@@ -226,7 +227,36 @@ def test_execute_check_in_action_dispatches_browser_mode_with_local_storage():
 		)
 
 	assert success is True
-	mock_browser.assert_awaited_once_with('Account 1', provider, {}, {'welfare.session_token': 'jwt-token'})
+	mock_browser.assert_awaited_once_with('Account 1', provider, {}, {'welfare.session_token': 'jwt-token'}, None)
+
+
+def test_execute_check_in_action_dispatches_browser_mode_with_headers():
+	client = MagicMock()
+	provider = ProviderConfig(
+		name='page',
+		domain='https://example.com',
+		sign_in_path='/api/sign',
+		check_in_mode='page_button',
+		check_in_page_path='/mission/checkin',
+		check_in_config={'button_selector': 'button.check-in'},
+	)
+	browser_headers = {'Authorization': 'Bearer test-token'}
+
+	with patch('utils.checkin_executor.execute_browser_check_in', new=AsyncMock(return_value=True)) as mock_browser:
+		success = asyncio.run(
+			execute_check_in_action(
+				client,
+				'Account 1',
+				provider,
+				{},
+				{},
+				None,
+				browser_headers,
+			)
+		)
+
+	assert success is True
+	mock_browser.assert_awaited_once_with('Account 1', provider, {}, None, browser_headers)
 
 
 def test_inject_browser_local_storage_uses_script_without_arg():
@@ -239,6 +269,15 @@ def test_inject_browser_local_storage_uses_script_without_arg():
 	assert 'script' in kwargs
 	assert 'welfare.session_token' in kwargs['script']
 	assert 'jwt-token' in kwargs['script']
+
+
+def test_apply_browser_headers_sets_extra_http_headers():
+	context = AsyncMock()
+	headers = {'Authorization': 'Bearer test-token'}
+
+	asyncio.run(apply_browser_headers(context, headers))
+
+	context.set_extra_http_headers.assert_awaited_once_with(headers)
 
 
 def test_get_user_info_supports_sign_status_mode():
@@ -406,3 +445,47 @@ def test_check_in_account_allows_browser_local_storage_without_cookies():
 	assert args[2] == provider
 	assert args[4] == {}
 	assert args[5] == {'welfare.session_token': 'jwt-token'}
+
+
+def test_check_in_account_allows_browser_headers_without_cookies():
+	from checkin import check_in_account
+	from utils.config import AccountConfig, AppConfig
+
+	provider = ProviderConfig(
+		name='free_9977_me',
+		domain='https://free.9977.me',
+		sign_in_path=None,
+		user_info_mode='none',
+		check_in_mode='page_button',
+		check_in_page_path='/purchase',
+		check_in_config={'button_selector': '#btn-claim'},
+	)
+	account = AccountConfig(
+		cookies={},
+		api_user='0',
+		provider='free_9977_me',
+		name='free-9977-me',
+		browser_headers={'Authorization': 'Bearer test-token'},
+	)
+	app_config = AppConfig(providers={'free_9977_me': provider})
+
+	with (
+		patch('checkin.prepare_cookies', new=AsyncMock(return_value={})),
+		patch('checkin.httpx.Client') as mock_client_class,
+		patch('checkin.execute_check_in_action', new=AsyncMock(return_value=True)) as mock_execute,
+	):
+		mock_client = MagicMock()
+		mock_client_class.return_value = mock_client
+
+		success, user_info = asyncio.run(check_in_account(account, 0, app_config))
+
+	assert success is True
+	assert user_info is None
+	mock_execute.assert_awaited_once()
+	args = mock_execute.await_args.args
+	assert args[0] is mock_client
+	assert args[1] == 'free-9977-me'
+	assert args[2] == provider
+	assert args[4] == {}
+	assert args[5] is None
+	assert args[6] == {'Authorization': 'Bearer test-token'}

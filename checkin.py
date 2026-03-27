@@ -241,7 +241,8 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 
 	user_cookies = parse_cookies(account.cookies)
 	has_browser_local_storage = bool(account.browser_local_storage)
-	if not user_cookies and not has_browser_local_storage:
+	has_browser_headers = bool(account.browser_headers)
+	if not user_cookies and not has_browser_local_storage and not has_browser_headers:
 		print(f'[FAILED] {account_name}: Invalid configuration format')
 		return False, None
 
@@ -275,6 +276,7 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 			headers,
 			all_cookies,
 			account.browser_local_storage,
+			account.browser_headers,
 		)
 		user_info = fetch_user_info(client, provider_config, headers)
 		if provider_config.user_info_mode != 'none' and user_info is not None:

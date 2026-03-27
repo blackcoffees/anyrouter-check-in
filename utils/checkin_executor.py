@@ -449,11 +449,19 @@ async def inject_browser_local_storage(context, local_storage: dict[str, str] | 
 	)
 
 
+async def apply_browser_headers(context, browser_headers: dict[str, str] | None):
+	if not browser_headers:
+		return
+
+	await context.set_extra_http_headers(browser_headers)
+
+
 async def execute_browser_check_in(
 	account_name: str,
 	provider_config: ProviderConfig,
 	cookies: dict,
 	browser_local_storage: dict[str, str] | None = None,
+	browser_headers: dict[str, str] | None = None,
 ) -> bool:
 	"""执行页面签到"""
 	check_in_url = build_check_in_url(provider_config)
@@ -485,6 +493,13 @@ async def execute_browser_check_in(
 				print(
 					f'[INFO] {account_name}: Browser localStorage initialized '
 					f'{list(browser_local_storage.keys())}'
+				)
+
+			await apply_browser_headers(context, browser_headers)
+			if browser_headers:
+				print(
+					f'[INFO] {account_name}: Browser extra headers initialized '
+					f'{list(browser_headers.keys())}'
 				)
 
 			page = await context.new_page()
@@ -532,13 +547,20 @@ async def execute_check_in_action(
 	headers: dict,
 	cookies: dict,
 	browser_local_storage: dict[str, str] | None = None,
+	browser_headers: dict[str, str] | None = None,
 ) -> bool:
 	"""按 provider 配置执行签到动作"""
 	if provider_config.check_in_mode == 'api_post':
 		return execute_api_check_in(client, account_name, provider_config, headers)
 
 	if provider_config.check_in_mode in ('page_button', 'page_challenge'):
-		return await execute_browser_check_in(account_name, provider_config, cookies, browser_local_storage)
+		return await execute_browser_check_in(
+			account_name,
+			provider_config,
+			cookies,
+			browser_local_storage,
+			browser_headers,
+		)
 
 	print(f'[INFO] {account_name}: Check-in is completed by user info request')
 	return True
