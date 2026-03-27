@@ -176,6 +176,7 @@ class AccountConfig:
 	name: str | None = None
 	browser_local_storage: dict[str, str] | None = None
 	browser_headers: dict[str, str] | None = None
+	browser_check_in_url: str | None = None
 
 	@classmethod
 	def from_dict(cls, data: dict, index: int) -> 'AccountConfig':
@@ -190,6 +191,7 @@ class AccountConfig:
 			name=name if name else None,
 			browser_local_storage=data.get('browser_local_storage'),
 			browser_headers=data.get('browser_headers'),
+			browser_check_in_url=data.get('browser_check_in_url'),
 		)
 
 	def get_display_name(self, index: int) -> str:

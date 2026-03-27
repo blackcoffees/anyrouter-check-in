@@ -37,6 +37,13 @@ def build_check_in_url(provider_config: ProviderConfig) -> str:
 	return urljoin(f'{provider_config.domain.rstrip("/")}/', provider_config.check_in_page_path.lstrip('/'))
 
 
+def resolve_browser_check_in_url(provider_config: ProviderConfig, browser_check_in_url: str | None = None) -> str:
+	if isinstance(browser_check_in_url, str) and browser_check_in_url.strip():
+		return browser_check_in_url.strip()
+
+	return build_check_in_url(provider_config)
+
+
 def is_successful_check_in_response(response: httpx.Response) -> bool:
 	"""判断签到接口是否成功"""
 	if response.status_code != 200:
@@ -462,9 +469,10 @@ async def execute_browser_check_in(
 	cookies: dict,
 	browser_local_storage: dict[str, str] | None = None,
 	browser_headers: dict[str, str] | None = None,
+	browser_check_in_url: str | None = None,
 ) -> bool:
 	"""执行页面签到"""
-	check_in_url = build_check_in_url(provider_config)
+	check_in_url = resolve_browser_check_in_url(provider_config, browser_check_in_url)
 	check_in_config = provider_config.check_in_config or {}
 
 	print(f'[PROCESSING] {account_name}: Opening browser check-in page {check_in_url}')
@@ -517,7 +525,7 @@ async def execute_browser_check_in(
 			except Exception as e:
 				print(f'[WARNING] {account_name}: Failed to read page title - {str(e)[:80]}')
 
-			if provider_config.check_in_page_path and provider_config.check_in_page_path not in page.url:
+			if not browser_check_in_url and provider_config.check_in_page_path and provider_config.check_in_page_path not in page.url:
 				print(f'[FAILED] {account_name}: Browser is not on expected check-in page, current url is {page.url}')
 				return False
 
@@ -548,6 +556,7 @@ async def execute_check_in_action(
 	cookies: dict,
 	browser_local_storage: dict[str, str] | None = None,
 	browser_headers: dict[str, str] | None = None,
+	browser_check_in_url: str | None = None,
 ) -> bool:
 	"""按 provider 配置执行签到动作"""
 	if provider_config.check_in_mode == 'api_post':
@@ -560,6 +569,7 @@ async def execute_check_in_action(
 			cookies,
 			browser_local_storage,
 			browser_headers,
+			browser_check_in_url,
 		)
 
 	print(f'[INFO] {account_name}: Check-in is completed by user info request')
