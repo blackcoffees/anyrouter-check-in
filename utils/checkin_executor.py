@@ -29,6 +29,14 @@ DEFAULT_USER_AGENT = (
 DEFAULT_MODAL_DISMISS_TEXTS = ['知道了', '关闭', '确认']
 
 
+class BrowserCheckInError(RuntimeError):
+	"""浏览器签到失败异常，可携带登录态失效标记"""
+
+	def __init__(self, message: str, *, expired: bool = False):
+		super().__init__(message)
+		self.expired = expired
+
+
 def build_check_in_url(provider_config: ProviderConfig) -> str:
 	"""构建签到页面地址"""
 	if not provider_config.check_in_page_path:
@@ -128,6 +136,14 @@ async def wait_for_page_any_text(page: Page, texts: list[str], timeout_ms: int):
 		arg=texts,
 		timeout=timeout_ms,
 	)
+
+
+async def get_page_body_text(page: Page) -> str:
+	"""读取页面文本，失败时返回空字符串"""
+	try:
+		return await page.evaluate('() => document.body ? document.body.innerText : ""')
+	except Exception:
+		return ''
 
 
 async def log_page_console_message(message):
@@ -243,6 +259,26 @@ async def is_success_signal_present(page: Page, check_in_config: dict) -> bool:
 	return False
 
 
+async def detect_browser_login_required(page: Page, provider_config: ProviderConfig) -> str | None:
+	"""检测页面是否已经回到登录态"""
+	login_path = (provider_config.login_path or '/login').strip() or '/login'
+	normalized_login_path = login_path if login_path.startswith('/') else f'/{login_path}'
+	current_path = urlparse(page.url or '').path or '/'
+	if current_path == normalized_login_path:
+		return f'Browser page redirected to login page: {page.url}'
+
+	expired_texts = get_config_string_list(provider_config.check_in_config or {}, 'expired_texts')
+	if not expired_texts:
+		return None
+
+	page_text = await get_page_body_text(page)
+	for text in expired_texts:
+		if text in page_text:
+			return f'Browser page shows login state, cookies/token may be expired: {text}'
+
+	return None
+
+
 async def is_selector_actionable(page: Page, selector: str) -> bool:
 	"""非阻塞检查是否存在可见且可点击的元素"""
 	try:
@@ -328,6 +364,32 @@ async def click_with_optional_response(page: Page, selector: str, check_in_confi
 
 	print(f'[PAGE-ACTION] Click {selector}')
 	await click_selector(page, selector, timeout_ms)
+
+
+async def navigate_to_check_in_page(page: Page, check_in_url: str, account_name: str, attempts: int = 3):
+	"""进入签到页，失败时重试，避免偶发 about:blank 或网关抖动"""
+	last_error = 'unknown navigation error'
+
+	for attempt in range(1, attempts + 1):
+		wait_until = 'domcontentloaded' if attempt == 1 else 'commit'
+		try:
+			await page.goto(check_in_url, wait_until=wait_until, timeout=60000)
+		except Exception as e:
+			last_error = str(e)[:120] or e.__class__.__name__
+			print(f'[WARNING] {account_name}: Page.goto failed on attempt {attempt}/{attempts} - {last_error}')
+
+		await page.wait_for_timeout(3000)
+		if page.url and page.url != 'about:blank':
+			return
+
+		if attempt < attempts:
+			print(f'[WARNING] {account_name}: Browser stayed on about:blank, retry navigation')
+			await page.wait_for_timeout(attempt * 2000)
+
+	raise BrowserCheckInError(
+		f'Failed to open browser check-in page after {attempts} attempts, '
+		f'current url is {page.url or "about:blank"}, last error: {last_error}'
+	)
 
 
 async def run_pre_click_selectors(page: Page, account_name: str, check_in_config: dict, timeout_ms: int):
@@ -512,12 +574,7 @@ async def execute_browser_check_in(
 
 			page = await context.new_page()
 			page.on('console', lambda message: asyncio.create_task(log_page_console_message(message)))
-			try:
-				await page.goto(check_in_url, wait_until='domcontentloaded', timeout=60000)
-			except PlaywrightTimeoutError:
-				print(f'[WARNING] {account_name}: Page.goto timed out, continue with current DOM state')
-
-			await page.wait_for_timeout(3000)
+			await navigate_to_check_in_page(page, check_in_url, account_name)
 			print(f'[INFO] {account_name}: Browser current url {page.url}')
 			try:
 				page_title = await asyncio.wait_for(page.title(), timeout=5)
@@ -525,9 +582,12 @@ async def execute_browser_check_in(
 			except Exception as e:
 				print(f'[WARNING] {account_name}: Failed to read page title - {str(e)[:80]}')
 
+			login_reason = await detect_browser_login_required(page, provider_config)
+			if login_reason:
+				raise BrowserCheckInError(login_reason, expired=True)
+
 			if not browser_check_in_url and provider_config.check_in_page_path and provider_config.check_in_page_path not in page.url:
-				print(f'[FAILED] {account_name}: Browser is not on expected check-in page, current url is {page.url}')
-				return False
+				raise BrowserCheckInError(f'Browser is not on expected check-in page, current url is {page.url}')
 
 			if provider_config.check_in_mode == 'page_button':
 				print(f'[PROCESSING] {account_name}: Entering page_button flow')
@@ -540,9 +600,10 @@ async def execute_browser_check_in(
 				print(f'[SUCCESS] {account_name}: Browser check-in flow completed')
 
 			return success
+		except BrowserCheckInError:
+			raise
 		except Exception as e:
-			print(f'[FAILED] {account_name}: Browser check-in failed - {str(e)[:80]}')
-			return False
+			raise BrowserCheckInError(f'Browser check-in failed - {str(e)[:80]}')
 		finally:
 			await context.close()
 			await browser.close()

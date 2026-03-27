@@ -14,7 +14,7 @@ import httpx
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
-from utils.checkin_executor import DEFAULT_USER_AGENT, PLAYWRIGHT_ARGS, execute_check_in_action
+from utils.checkin_executor import BrowserCheckInError, DEFAULT_USER_AGENT, PLAYWRIGHT_ARGS, execute_check_in_action
 from utils.config import AccountConfig, AppConfig, load_accounts_config
 from utils.notify import notify
 
@@ -270,17 +270,30 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 				print(f'[INFO] {account_name}: Check-in completed automatically (triggered by user info request)')
 			return success, user_info
 
-		success = await execute_check_in_action(
-			client,
-			account_name,
-			provider_config,
-			headers,
-			all_cookies,
-			account.browser_local_storage,
-			account.browser_headers,
-			account.browser_check_in_url,
-		)
+		action_user_info = None
+		try:
+			success = await execute_check_in_action(
+				client,
+				account_name,
+				provider_config,
+				headers,
+				all_cookies,
+				account.browser_local_storage,
+				account.browser_headers,
+				account.browser_check_in_url,
+			)
+		except BrowserCheckInError as e:
+			success = False
+			action_user_info = {
+				'success': False,
+				'expired': e.expired,
+				'error': str(e),
+			}
+			print(f'[FAILED] {account_name}: {e}')
+
 		user_info = fetch_user_info(client, provider_config, headers)
+		if user_info is None and action_user_info is not None:
+			user_info = action_user_info
 		if provider_config.user_info_mode != 'none' and user_info is not None:
 			success = success and bool(user_info.get('success'))
 		return success, user_info

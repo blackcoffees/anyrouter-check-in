@@ -2,16 +2,20 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 
 from utils.checkin_executor import (
+	BrowserCheckInError,
 	apply_browser_headers,
 	build_check_in_url,
 	build_browser_cookies,
+	detect_browser_login_required,
 	execute_api_check_in,
 	execute_check_in_action,
 	execute_page_button_check_in_on_page,
 	execute_page_challenge_check_in_on_page,
 	inject_browser_local_storage,
+	navigate_to_check_in_page,
 	resolve_browser_check_in_url,
 )
 from utils.config import ProviderConfig
@@ -21,6 +25,10 @@ from checkin import get_user_info
 class FakePage:
 	def __init__(self):
 		self.calls = []
+		self.url = 'about:blank'
+		self.title_text = 'Fake Page'
+		self.body_text = ''
+		self.goto_outcomes = []
 
 	class FakeLocator:
 		def __init__(self, page, selector):
@@ -64,6 +72,32 @@ class FakePage:
 	async def wait_for_load_state(self, state):
 		self.calls.append(('wait_for_load_state', state))
 
+	async def goto(self, url, wait_until=None, timeout=None):
+		self.calls.append(('goto', url, wait_until, timeout))
+		if self.goto_outcomes:
+			outcome = self.goto_outcomes.pop(0)
+			if isinstance(outcome, Exception):
+				raise outcome
+			if isinstance(outcome, dict):
+				self.url = outcome.get('url', self.url)
+				return outcome
+
+		self.url = url
+		return {'url': url}
+
+	async def title(self):
+		return self.title_text
+
+	async def evaluate(self, script, arg=None):
+		self.calls.append(('evaluate', script, arg))
+		if arg is None:
+			return self.body_text
+		if isinstance(arg, str):
+			return arg in self.body_text
+		if isinstance(arg, list):
+			return any(text in self.body_text for text in arg)
+		return False
+
 	def locator(self, selector):
 		return self.FakeLocator(self, selector)
 
@@ -100,6 +134,49 @@ def test_resolve_browser_check_in_url_supports_account_override():
 	result = resolve_browser_check_in_url(provider, 'https://widget.example.com/?token=abc')
 
 	assert result == 'https://widget.example.com/?token=abc'
+
+
+def test_detect_browser_login_required_by_page_text():
+	page = FakePage()
+	page.url = 'https://signv.ice.v.ua/'
+	page.body_text = '通过 LinuxDO 登录后可进行签到与申请重置。 LinuxDO 登录'
+	provider = ProviderConfig(
+		name='signv_ice_v_ua',
+		domain='https://signv.ice.v.ua',
+		login_path='/login',
+		sign_in_path=None,
+		check_in_mode='page_button',
+		check_in_page_path='/',
+		check_in_config={'expired_texts': ['通过 LinuxDO 登录后可进行签到与申请重置。']},
+	)
+
+	reason = asyncio.run(detect_browser_login_required(page, provider))
+
+	assert reason is not None
+	assert 'login' in reason.lower()
+
+
+def test_navigate_to_check_in_page_retries_after_about_blank_timeout():
+	page = FakePage()
+	page.goto_outcomes = [
+		Exception('timeout'),
+		{'url': 'https://checkin.9977.me/?token=abc'},
+	]
+
+	asyncio.run(navigate_to_check_in_page(page, 'https://checkin.9977.me/?token=abc', 'Account 1', attempts=2))
+
+	goto_calls = [call for call in page.calls if call[0] == 'goto']
+	assert len(goto_calls) == 2
+	assert goto_calls[0][2] == 'domcontentloaded'
+	assert goto_calls[1][2] == 'commit'
+
+
+def test_navigate_to_check_in_page_raises_after_all_retries_fail():
+	page = FakePage()
+	page.goto_outcomes = [Exception('timeout'), Exception('timeout')]
+
+	with pytest.raises(BrowserCheckInError):
+		asyncio.run(navigate_to_check_in_page(page, 'https://checkin.9977.me/?token=abc', 'Account 1', attempts=2))
 
 
 def test_build_browser_cookies_uses_url_binding():
