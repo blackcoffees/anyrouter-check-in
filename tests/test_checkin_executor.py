@@ -17,6 +17,7 @@ from utils.checkin_executor import (
 	inject_browser_local_storage,
 	navigate_to_check_in_page,
 	resolve_browser_check_in_url,
+	resolve_preferred_flow,
 )
 from utils.config import ProviderConfig
 from checkin import get_user_info
@@ -29,6 +30,7 @@ class FakePage:
 		self.title_text = 'Fake Page'
 		self.body_text = ''
 		self.goto_outcomes = []
+		self.disabled_selectors = set()
 
 	class FakeLocator:
 		def __init__(self, page, selector):
@@ -46,7 +48,7 @@ class FakePage:
 			return True
 
 		async def is_enabled(self):
-			return True
+			return self.selector not in self.page.disabled_selectors
 
 		async def click(self, **_kwargs):
 			self.page.calls.append(('locator_click', self.selector))
@@ -658,3 +660,102 @@ def test_check_in_account_allows_browser_check_in_url_without_cookies():
 	assert args[5] is None
 	assert args[6] is None
 	assert args[7] == 'https://checkin.9977.me/?token=abc'
+
+
+def test_resolve_preferred_flow_uses_preferred_when_button_actionable():
+	page = FakePage()
+	config = {
+		'button_selector': 'button.fortune-action.primary',
+		'success_texts': ['签到成功', '已签到'],
+		'timeout_ms': 5000,
+		'preferred_flow': {
+			'pre_click_selectors': ['button.fortune-mode-tab.blindbox'],
+			'button_selector': 'button.fortune-action.blindbox-action',
+		},
+	}
+
+	result = asyncio.run(resolve_preferred_flow(page, 'Account 1', config, 5000))
+
+	assert result['button_selector'] == 'button.fortune-action.blindbox-action'
+	assert 'preferred_flow' not in result
+	assert 'pre_click_selectors' not in result
+	assert result['success_texts'] == ['签到成功', '已签到']
+	assert ('locator_click', 'button.fortune-mode-tab.blindbox') in page.calls
+
+
+def test_resolve_preferred_flow_falls_back_when_button_disabled():
+	page = FakePage()
+	page.disabled_selectors.add('button.fortune-action.blindbox-action')
+	config = {
+		'button_selector': 'button.fortune-action.primary',
+		'pre_click_selectors': [],
+		'success_texts': ['签到成功', '已签到'],
+		'timeout_ms': 5000,
+		'preferred_flow': {
+			'pre_click_selectors': ['button.fortune-mode-tab.blindbox'],
+			'button_selector': 'button.fortune-action.blindbox-action',
+			'fallback_pre_click_selectors': ['button.fortune-mode-tab.active'],
+		},
+	}
+
+	result = asyncio.run(resolve_preferred_flow(page, 'Account 1', config, 5000))
+
+	assert result['button_selector'] == 'button.fortune-action.primary'
+	assert ('locator_click', 'button.fortune-mode-tab.blindbox') in page.calls
+	assert ('locator_click', 'button.fortune-mode-tab.active') in page.calls
+
+
+def test_resolve_preferred_flow_returns_original_when_no_preferred():
+	page = FakePage()
+	config = {
+		'button_selector': 'button.fortune-action.primary',
+		'success_texts': ['签到成功'],
+		'timeout_ms': 5000,
+	}
+
+	result = asyncio.run(resolve_preferred_flow(page, 'Account 1', config, 5000))
+
+	assert result is config
+
+
+def test_page_button_flow_with_preferred_flow_end_to_end():
+	page = FakePage()
+	config = {
+		'button_selector': 'button.fortune-action.primary',
+		'success_texts': ['签到成功', '已签到'],
+		'timeout_ms': 5000,
+		'preferred_flow': {
+			'pre_click_selectors': ['button.fortune-mode-tab.blindbox'],
+			'button_selector': 'button.fortune-action.blindbox-action',
+		},
+	}
+
+	success = asyncio.run(execute_page_button_check_in_on_page(page, 'Account 1', config))
+
+	assert success is True
+	assert ('locator_click', 'button.fortune-mode-tab.blindbox') in page.calls
+	assert ('locator_click', 'button.fortune-action.blindbox-action') in page.calls
+	assert ('locator_click', 'button.fortune-action.primary') not in page.calls
+
+
+def test_page_button_flow_with_preferred_flow_falls_back():
+	page = FakePage()
+	page.disabled_selectors.add('button.fortune-action.blindbox-action')
+	config = {
+		'button_selector': 'button.fortune-action.primary',
+		'success_texts': ['签到成功', '已签到'],
+		'timeout_ms': 5000,
+		'preferred_flow': {
+			'pre_click_selectors': ['button.fortune-mode-tab.blindbox'],
+			'button_selector': 'button.fortune-action.blindbox-action',
+			'fallback_pre_click_selectors': ['button.fortune-mode-tab.active'],
+		},
+	}
+
+	success = asyncio.run(execute_page_button_check_in_on_page(page, 'Account 1', config))
+
+	assert success is True
+	assert ('locator_click', 'button.fortune-mode-tab.blindbox') in page.calls
+	assert ('locator_click', 'button.fortune-mode-tab.active') in page.calls
+	assert ('locator_click', 'button.fortune-action.primary') in page.calls
+	assert ('locator_click', 'button.fortune-action.blindbox-action') not in page.calls

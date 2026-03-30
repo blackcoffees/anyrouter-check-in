@@ -398,22 +398,67 @@ async def run_pre_click_selectors(page: Page, account_name: str, check_in_config
 		await click_selector(page, selector, timeout_ms)
 
 
+async def resolve_preferred_flow(page: Page, account_name: str, check_in_config: dict, timeout_ms: int) -> dict:
+	"""尝试优先签到流程（如惊喜签到），不可用时回退并返回默认配置"""
+	preferred = check_in_config.get('preferred_flow')
+	if not preferred or not isinstance(preferred, dict):
+		return check_in_config
+
+	pf_button = preferred.get('button_selector')
+	if not isinstance(pf_button, str) or not pf_button.strip():
+		return check_in_config
+
+	pf_button = pf_button.strip()
+	click_timeout = min(timeout_ms, 10000)
+
+	pf_pre_clicks = get_config_string_list(preferred, 'pre_click_selectors')
+	try:
+		for selector in pf_pre_clicks:
+			print(f'[PAGE-ACTION] {account_name}: Preferred flow pre-click {selector}')
+			await click_selector(page, selector, click_timeout)
+
+		await page.wait_for_timeout(1000)
+
+		if await is_selector_actionable(page, pf_button):
+			print(f'[INFO] {account_name}: Preferred flow available, using button {pf_button}')
+			effective = dict(check_in_config)
+			effective['button_selector'] = pf_button
+			effective.pop('pre_click_selectors', None)
+			effective.pop('preferred_flow', None)
+			return effective
+	except Exception as e:
+		print(f'[WARNING] {account_name}: Preferred flow attempt failed - {str(e)[:80]}')
+
+	print(f'[INFO] {account_name}: Preferred flow not available, falling back to default')
+	for selector in get_config_string_list(preferred, 'fallback_pre_click_selectors'):
+		try:
+			print(f'[PAGE-ACTION] {account_name}: Fallback pre-click {selector}')
+			await click_selector(page, selector, click_timeout)
+		except Exception as e:
+			print(f'[WARNING] {account_name}: Fallback click {selector} failed - {str(e)[:80]}')
+
+	return check_in_config
+
+
 async def execute_page_button_check_in_on_page(page: Page, account_name: str, check_in_config: dict) -> bool:
 	"""执行页面按钮签到"""
 	timeout_ms = get_timeout_ms(check_in_config)
-	button_selector = get_required_config_value(check_in_config, 'button_selector', account_name)
+
+	await dismiss_known_overlays(page, account_name, check_in_config)
+	active_config = await resolve_preferred_flow(page, account_name, check_in_config, timeout_ms)
+
+	button_selector = get_required_config_value(active_config, 'button_selector', account_name)
 	if not button_selector:
 		return False
 
-	await dismiss_known_overlays(page, account_name, check_in_config)
-	await run_pre_click_selectors(page, account_name, check_in_config, timeout_ms)
-	state = await wait_for_button_or_success(page, button_selector, check_in_config, timeout_ms)
+	await run_pre_click_selectors(page, account_name, active_config, timeout_ms)
+	state = await wait_for_button_or_success(page, button_selector, active_config, timeout_ms)
 	if state == 'success':
 		print(f'[INFO] {account_name}: Page already shows check-in success state')
 		return True
 
-	await click_with_optional_response(page, button_selector, check_in_config, timeout_ms)
-	await wait_for_success_signal(page, check_in_config, timeout_ms)
+	await click_with_optional_response(page, button_selector, active_config, timeout_ms)
+	await wait_for_success_signal(page, active_config, timeout_ms)
 	return True
 
 
