@@ -648,6 +648,9 @@ async def execute_browser_check_in(
 		except BrowserCheckInError:
 			raise
 		except Exception as e:
+			body_text = await get_page_body_text(page)
+			if body_text:
+				print(f'[DEBUG] {account_name}: Page body text at failure:\n{body_text[:500]}')
 			raise BrowserCheckInError(f'Browser check-in failed - {str(e)[:80]}')
 		finally:
 			await context.close()
